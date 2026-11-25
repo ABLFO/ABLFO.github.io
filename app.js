@@ -24,7 +24,7 @@ const PRIZES = {
 // Night n draws prize 9-n. Chanukah 5787: first candle Friday Dec 4, 2026.
 const NIGHTS = [
   { n: 1, prize: 8, light: "Fri, Dec 4", draw: "Motzei Shabbos, Dec 5" },
-  { n: 2, prize: 7, light: "Sat, Dec 5", draw: "Motzei Shabbos, Dec 5" },
+  { n: 2, prize: 7, light: "Motzei Shabbos, Dec 5", draw: "Motzei Shabbos, Dec 5" },
   { n: 3, prize: 6, light: "Sun, Dec 6", draw: "Sun, Dec 6" },
   { n: 4, prize: 5, light: "Mon, Dec 7", draw: "Mon, Dec 7" },
   { n: 5, prize: 4, light: "Tue, Dec 8", draw: "Tue, Dec 8" },
@@ -808,7 +808,7 @@ function renderNights() {
       el("div", { class: "body" },
         el("div", { class: "n" }, el("span", { class: "eyebrow", text: `Night ${N.n}` }), flames),
         el("div", { class: "prize", text: `#${N.prize} ${PRIZES[N.prize].name}` }),
-        el("div", { class: "when", text: N.draw === N.light ? N.light : `Lit ${N.light} · drawn ${N.draw}` }),
+        el("div", { class: "when", text: N.draw !== N.light ? `Lit ${N.light} · drawn ${N.draw}` : N.light.startsWith("Motzei") ? `Lit and drawn ${N.light}` : N.light }),
         el("div", { class: "status" + (rec ? " won" : ""), text: rec ? `${rec.practice ? "Practice: " : "Won by "}${rec.name}` : (S.selected === N.n ? "Selected" : "Not drawn yet") }))));
   }
 }

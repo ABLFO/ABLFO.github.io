@@ -317,3 +317,49 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 }
 /* prize tiles: show the top of each photo so the number badge in its corner is never cut off */
 .w-card img, .night img { aspect-ratio: 4 / 3; object-position: center top; }
+
+/* Draw screen effects: rising glow while names flash, the winner landing, confetti canvas */
+.stage { --heat: 0; background: radial-gradient(ellipse at 50% 55%, rgba(233,196,106, calc(var(--heat) * .22)), rgba(233,196,106, 0) 58%), radial-gradient(ellipse at 50% 0%, var(--stage-2), var(--stage) 70%); }
+.st-name.rolling { text-shadow: 0 0 calc(var(--heat) * 36px) rgba(233,196,106, calc(var(--heat) * .6)); }
+.fx { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+.st-name.landing { animation: land .75s cubic-bezier(.18, 1.35, .4, 1) both, shimmer 2.2s ease .75s 1 both; background: linear-gradient(100deg, var(--stage-gold) 35%, #fff4cf 50%, var(--stage-gold) 65%); background-size: 260% 100%; background-position: 100% 0; -webkit-background-clip: text; background-clip: text; color: transparent; text-shadow: none; filter: drop-shadow(0 0 22px rgba(233,196,106,.45)); }
+@keyframes land { 0% { transform: scale(.55); opacity: 0; } 60% { transform: scale(1.08); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (orientation: landscape) and (max-height: 560px) { .st-name.landing { transform-origin: left center; } }
+.stage.flash::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 50% 55%, rgba(255,240,200,.45), rgba(255,240,200,0) 60%); animation: flashfade 1s ease-out forwards; }
+@keyframes flashfade { from { opacity: 1; } to { opacity: 0; } }
+.flame-path.flare { animation: flare 1.6s ease-out .1s both; transform-box: fill-box; transform-origin: center bottom; }
+@keyframes flare { 0% { opacity: .12; transform: scale(.6); } 35% { opacity: 1; transform: scale(1.7); filter: drop-shadow(0 0 8px #ffd77a); } 100% { opacity: 1; transform: scale(1); filter: drop-shadow(0 0 3px #ffd77a); } }
+
+/* The sound switch: a gold pill floating on the watch page, a small button in the organizer's top bar */
+.sound-btn { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 70; display: inline-flex; gap: 8px; align-items: center; padding: 10px 16px; border-radius: 999px; border: 1px solid var(--stage-gold); background: var(--stage-gold); color: var(--stage); font: 700 14px/1 var(--f-body); box-shadow: 0 6px 20px rgba(0,0,0,.3); cursor: pointer; animation: nudge 2.8s ease-in-out infinite; }
+.sound-btn svg { width: 20px; height: 20px; flex: none; }
+.sound-btn .waves { display: none; }
+.sound-btn.on { background: rgba(8,18,57,.88); color: var(--stage-gold); animation: none; }
+.sound-btn.on .waves { display: inline; }
+.sound-btn.on .slash { display: none; }
+.stage-top .sound-btn { position: static; box-shadow: none; padding: 6px 12px; font-size: 13px; animation: none; }
+.stage-top .sound-btn.on { background: transparent; }
+@keyframes nudge { 0%, 70%, 100% { transform: scale(1); } 80% { transform: scale(1.06); } 90% { transform: scale(.98); } }
+@media (prefers-reduced-motion: reduce) {
+  .st-name.landing, .flame-path.flare, .stage.flash::after, .sound-btn { animation: none !important; }
+  .st-name.landing { background-position: 50% 0; }
+}
+
+/* Tonight's candle bursts into flame at the reveal, then keeps flickering */
+.flame-path.ignite { animation: ignite 1.5s cubic-bezier(.2, .9, .3, 1) .05s both, flicker 1.3s ease-in-out 1.6s infinite; transform-box: fill-box; transform-origin: center bottom; }
+@keyframes ignite {
+  0% { opacity: .1; transform: scale(.3); }
+  16% { opacity: 1; transform: scale(2.7, 3.4); fill: #fff3c4; }
+  40% { transform: scale(1.7, 2.1); fill: #ffd77a; }
+  70% { transform: scale(1.3, 1.5); }
+  100% { opacity: 1; transform: scale(1.2, 1.35); }
+}
+@keyframes flicker {
+  0%, 100% { transform: scale(1.2, 1.35); }
+  30% { transform: scale(1.12, 1.48) skewX(-3deg); }
+  60% { transform: scale(1.26, 1.28) skewX(2deg); }
+}
+.halo { transform-box: fill-box; transform-origin: center; animation: halo 1.8s ease-out .05s both; mix-blend-mode: screen; }
+@keyframes halo { 0% { opacity: 0; transform: scale(.2); } 22% { opacity: 1; transform: scale(2.2); } 100% { opacity: .55; transform: scale(1.15); } }
+@media (prefers-reduced-motion: reduce) { .flame-path.ignite, .halo { animation: none !important; } .flame-path.ignite { opacity: 1; } .halo { opacity: .5; } }

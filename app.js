@@ -530,7 +530,9 @@ const STAGE_HTML = `
   <div class="stage-bot" id="stControls"></div>
   <div class="st-winners" id="stWinners"></div>
   <img class="stage-sponsors" src="img/sponsors.jpg" alt="Thank you to our sponsors">
+  <canvas class="fx" id="fx" aria-hidden="true"></canvas>
 </div>
+<button class="sound-btn" id="soundBtn" type="button" hidden></button>
 <div class="toast" id="toast" hidden></div>`;
 
 /* ---------- Package matching ---------- */
@@ -1105,6 +1107,9 @@ const NS = "http://www.w3.org/2000/svg";
 function svg(tag, attrs) { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; }
 function drawMenorah(lit, glowNight) {
   const m = $("menorah"); m.replaceChildren();
+  const defs = svg("defs", {}), rg = svg("radialGradient", { id: "flameHalo" });
+  [["0", "#fff1b8", "0.95"], ["0.35", "#ffc24a", "0.55"], ["1", "#ff8a1a", "0"]].forEach(([o, c, a]) => rg.append(svg("stop", { offset: o, "stop-color": c, "stop-opacity": a })));
+  defs.append(rg); m.append(defs);
   const gold = "#e9c46a", metal = "#c9a64a";
   const xs = [40, 92, 144, 196, 324, 376, 428, 480];
   m.append(svg("rect", { x: 160, y: 196, width: 200, height: 12, rx: 4, fill: metal }));
@@ -1115,7 +1120,10 @@ function drawMenorah(lit, glowNight) {
   const candle = (x, y, on, glow) => {
     m.append(svg("rect", { x: x - 6, y, width: 12, height: 34, rx: 2, fill: "#ece7f4" }));
     const f = svg("path", { class: "flame-path", d: `M${x} ${y - 24} C ${x + 9} ${y - 12}, ${x + 6} ${y - 2}, ${x} ${y - 2} C ${x - 6} ${y - 2}, ${x - 9} ${y - 12}, ${x} ${y - 24} Z`, fill: gold, opacity: on ? 1 : 0.12 });
-    if (glow) { f.setAttribute("opacity", "0.12"); requestAnimationFrame(() => requestAnimationFrame(() => f.setAttribute("opacity", "1"))); }
+    if (glow) {
+      const halo = svg("circle", { class: "halo", cx: x, cy: y - 12, r: 26, fill: "url(#flameHalo)" });
+      m.append(halo);
+      f.setAttribute("opacity", "0.12"); f.classList.add("ignite"); requestAnimationFrame(() => requestAnimationFrame(() => f.setAttribute("opacity", "1"))); }
     m.append(f);
   };
   candle(260, 30, true, false);
@@ -1128,6 +1136,7 @@ function stageFrame(night, { operator, subtitle }) {
   stage.operator = operator;
   $("stage").hidden = false; document.body.style.overflow = "hidden";
   document.documentElement.dataset.stage = "open";
+  setHeat(0); updateSoundBtn();
   $("stShortWrap").hidden = !operator; $("stPracticeWrap").hidden = !operator; $("stShowWrap").hidden = true;
   $("stLive").hidden = operator;
   $("stClose").hidden = !operator;
@@ -1149,6 +1158,7 @@ function closeStage() {
   clearTimeout(stage.timer);
   $("stage").hidden = true; document.body.style.overflow = "";
   delete document.documentElement.dataset.stage;
+  updateSoundBtn();
   try { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); } catch {}
   if (stage.operator) refresh();
 }
@@ -1163,7 +1173,7 @@ function rollTo(rec, revealAt, tickets, rollMs) {
     const getList = () => { const l = typeof tickets === "function" ? tickets() : tickets; return l && l.length ? l : null; };
     const total = Math.max(1, rec.poolTickets || 1);
     const fastEnd = revealAt - SLOW_MS, fastStart = revealAt - (rollMs || REVEAL_MS);
-    let order = null, orderFor = 0, shown = -1, slowNext = 0;
+    let order = null, orderFor = 0, shown = -1, slowNext = 0, nextHit = 0;
     const show = x => { nm.textContent = x.n; cnt.textContent = "Ticket #" + fmt(x.t); };
     const tick = () => {
       const now = Date.now();
@@ -1172,6 +1182,9 @@ function rollTo(rec, revealAt, tickets, rollMs) {
       if (now < fastStart) {
         nm.textContent = "Get ready"; cnt.textContent = `${fmt(total)} tickets in this drawing`;
       } else if (now < fastEnd) {
+        const prog = (now - fastStart) / (fastEnd - fastStart);
+        setHeat(0.15 + 0.6 * prog);
+        if (now >= nextHit) { sfxHit(0.05 + 0.13 * prog); nextHit = now + 1000 / (13 + 11 * prog); }
         if (list) {
           if (!order || orderFor !== list.length) { order = shuffledOrder(list.length); orderFor = list.length; }
           const i = Math.min(order.length - 1, Math.floor((now - fastStart) / ((fastEnd - fastStart) / order.length)));
@@ -1179,7 +1192,9 @@ function rollTo(rec, revealAt, tickets, rollMs) {
         } else { nm.textContent = "#" + fmt(randomBelow(total) + 1); cnt.textContent = "Drawing…"; }
       } else if (now >= slowNext) {
         if (list) show(list[randomBelow(list.length)]); else nm.textContent = "#" + fmt(randomBelow(total) + 1);
+        sfxTick();
         const p = (now - fastEnd) / SLOW_MS;
+        setHeat(0.75 + 0.25 * p);
         slowNext = now + 90 + 520 * p * p;
       }
       stage.timer = setTimeout(tick, now < fastEnd ? 8 : 20);
@@ -1187,9 +1202,11 @@ function rollTo(rec, revealAt, tickets, rollMs) {
     tick();
   });
 }
-function showWinner(rec) {
+function showWinner(rec, fresh = true) {
   const N = NIGHTS[rec.night - 1];
-  $("stName").textContent = rec.name; $("stName").className = "st-name won";
+  $("stName").textContent = rec.name; $("stName").className = "st-name won" + (fresh ? " landing" : "");
+  setHeat(0);
+  if (fresh) { sfxIgnite(); setTimeout(sfxFanfare, 150); requestAnimationFrame(() => { candleSparks(N.n); confetti(); }); $("stage").classList.remove("flash"); void $("stage").offsetWidth; $("stage").classList.add("flash"); }
   $("stCount").textContent = "";
   $("stSub").textContent = `Ticket #${fmt(rec.ticket)} of ${fmt(rec.poolTickets)} · held ${fmt(rec.held)} ${rec.held === 1 ? "ticket" : "tickets"}`;
   $("stSeller").textContent = rec.seller ? `Sold by ${rec.seller}${rec.pkg ? " · " + rec.pkg : ""}` : (rec.pkg || "");
@@ -1202,8 +1219,172 @@ async function playReveal(rec, revealAt, operator, tickets, rollMs) {
   stageFrame(rec.night, { operator, subtitle: `${fmt(rec.poolTickets)} tickets · ${fmt(rec.poolEntrants)} people` });
   $("stMeta").replaceChildren("List fingerprint ", el("span", { class: "fp", text: rec.fp }));
   if (Date.now() < revealAt) await rollTo(rec, revealAt, tickets, rollMs);
-  showWinner(rec);
+  showWinner(rec, Date.now() - revealAt < 4000);
   if (operator) operatorControls("done");
+}
+
+/* ===================================================================
+   Sound and celebration effects for the draw screen
+   Sounds are made in the browser (no files). Phones only play sound after a tap,
+   so viewers turn it on with the gold button; the organizer's Draw press counts.
+   =================================================================== */
+const REDUCED = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const SFX = { ctx: null, master: null, noise: null };
+function soundWanted() {
+  const v = document.documentElement.dataset.view;
+  const pref = store.get(v === "desk" ? "soundDesk" : "soundWatch", null);
+  return pref === null ? v === "desk" : pref;   // organizer: on unless muted; viewers: off until they tap
+}
+function audio() {
+  if (!soundWanted()) return null;
+  if (!SFX.ctx) {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
+    try { SFX.ctx = new AC(); } catch { return null; }
+    SFX.master = SFX.ctx.createGain(); SFX.master.gain.value = 0.55; SFX.master.connect(SFX.ctx.destination);
+  }
+  if (SFX.ctx.state === "suspended") SFX.ctx.resume().catch(() => {});
+  return SFX.ctx.state === "running" ? SFX.ctx : null;
+}
+function unlockAudio() { if (soundWanted()) { audio(); setTimeout(updateSoundBtn, 50); } }
+function noiseBuf(c) {
+  if (SFX.noise) return SFX.noise;
+  const b = c.createBuffer(1, c.sampleRate, c.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return (SFX.noise = b);
+}
+// one stroke of the snare drumroll
+function sfxHit(vol) {
+  const c = audio(); if (!c) return;
+  const t = c.currentTime, src = c.createBufferSource(), bp = c.createBiquadFilter(), g = c.createGain();
+  src.buffer = noiseBuf(c); bp.type = "bandpass"; bp.frequency.value = 1700 + Math.random() * 300; bp.Q.value = 0.8;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0008, t + 0.07);
+  src.connect(bp).connect(g).connect(SFX.master); src.start(t, Math.random() * 0.8); src.stop(t + 0.09);
+}
+// the click of each name in the slow-down, like a prize wheel
+function sfxTick() {
+  const c = audio(); if (!c) return;
+  const t = c.currentTime, o = c.createOscillator(), g = c.createGain();
+  o.type = "square"; o.frequency.setValueAtTime(2300, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.03);
+  g.gain.setValueAtTime(0.09, t); g.gain.exponentialRampToValueAtTime(0.0008, t + 0.035);
+  o.connect(g).connect(SFX.master); o.start(t); o.stop(t + 0.04);
+}
+// the reveal: a bright rising arpeggio into a held chord, a soft cymbal and a few sparkles
+function sfxFanfare() {
+  const c = audio(); if (!c) return;
+  const t0 = c.currentTime + 0.02;
+  const note = (f, start, dur, vol, type = "triangle") => {
+    const o = c.createOscillator(), g = c.createGain(); o.type = type; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t0 + start); g.gain.exponentialRampToValueAtTime(vol, t0 + start + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0008, t0 + start + dur);
+    o.connect(g).connect(SFX.master); o.start(t0 + start); o.stop(t0 + start + dur + 0.05);
+  };
+  [523.25, 659.25, 783.99].forEach((f, i) => note(f, i * 0.09, 0.5, 0.16));
+  [523.25, 659.25, 783.99, 1046.5].forEach(f => note(f, 0.3, 1.9, 0.11));
+  note(261.63, 0.3, 1.9, 0.12, "sine");
+  for (let i = 0; i < 9; i++) note(2000 + Math.random() * 2200, 0.35 + Math.random() * 1.1, 0.35, 0.035, "sine");
+  const src = c.createBufferSource(), hp = c.createBiquadFilter(), g = c.createGain();
+  src.buffer = noiseBuf(c); hp.type = "highpass"; hp.frequency.value = 6500;
+  g.gain.setValueAtTime(0.0001, t0 + 0.3); g.gain.exponentialRampToValueAtTime(0.12, t0 + 0.32); g.gain.exponentialRampToValueAtTime(0.0008, t0 + 1.9);
+  src.connect(hp).connect(g).connect(SFX.master); src.start(t0 + 0.3); src.stop(t0 + 2);
+}
+// the gold sound button, on the watch page and on the organizer's draw screen
+const SPEAKER = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path class="waves" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path class="slash" d="M16 9l5 6M21 9l-5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+function updateSoundBtn() {
+  const b = $("soundBtn"); if (!b) return;
+  const v = document.documentElement.dataset.view;
+  b.hidden = v === "gate" || (v === "desk" && $("stage").hidden);
+  const on = soundWanted() && SFX.ctx && SFX.ctx.state === "running";
+  b.classList.toggle("on", !!on);
+  b.innerHTML = SPEAKER + `<span>${on ? "Sound on" : soundWanted() ? "Tap to start sound" : "Tap for sound"}</span>`;
+  b.setAttribute("aria-pressed", String(!!on));
+}
+function toggleSound() {
+  const v = document.documentElement.dataset.view, key = v === "desk" ? "soundDesk" : "soundWatch";
+  const on = soundWanted() && SFX.ctx && SFX.ctx.state === "running";
+  store.set(key, !on);
+  if (!on) { audio(); setTimeout(() => { updateSoundBtn(); sfxTick(); }, 60); }
+  updateSoundBtn();
+}
+// rising glow behind the flashing names (0 = calm, 1 = about to land)
+function setHeat(h) { const st = $("stage"); if (st) st.style.setProperty("--heat", String(Math.max(0, Math.min(1, h)))); }
+// One animation layer for the reveal: sparks from tonight's candle and confetti from the winner's name.
+const FXS = { parts: [], emitters: [], running: false, W: 0, H: 0, ctx: null };
+function fxStart() {
+  const cv = $("fx"); if (!cv) return null;
+  if (!FXS.running) {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    FXS.W = innerWidth; FXS.H = innerHeight;
+    cv.width = FXS.W * dpr; cv.height = FXS.H * dpr; cv.style.width = FXS.W + "px"; cv.style.height = FXS.H + "px";
+    FXS.ctx = cv.getContext("2d"); FXS.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    FXS.running = true;
+    let last = performance.now();
+    const frame = now => {
+      const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      const ctx = FXS.ctx; ctx.clearRect(0, 0, FXS.W, FXS.H);
+      for (const em of FXS.emitters) { em.left -= dt; em.acc += em.rate * dt; while (em.acc >= 1 && em.left > 0) { em.acc--; FXS.parts.push(em.make()); } }
+      FXS.emitters = FXS.emitters.filter(e => e.left > 0);
+      for (const p of FXS.parts) {
+        p.age += dt; p.px = p.x; p.py = p.y;
+        p.vy += p.g * dt; p.vx *= p.drag; p.vy *= p.drag; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += (p.vr || 0) * dt;
+        const life = 1 - p.age / p.life; if (life <= 0) continue;
+        if (p.kind === "spark") {
+          ctx.globalAlpha = Math.min(1, life * 1.3) * (0.75 + 0.25 * Math.sin(p.age * 40 + p.seed));
+          ctx.strokeStyle = p.c; ctx.lineWidth = p.size; ctx.lineCap = "round";
+          ctx.beginPath(); ctx.moveTo(p.px - p.vx * 0.025, p.py - p.vy * 0.025); ctx.lineTo(p.x, p.y); ctx.stroke();
+          ctx.globalAlpha = life * 0.28; ctx.fillStyle = "#ff9a3c"; ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 2.2, 0, Math.PI * 2); ctx.fill();
+        } else {
+          ctx.globalAlpha = Math.min(1, life * 1.6); ctx.fillStyle = p.c;
+          if (p.star) { const r = 2.5 + 1.5 * Math.sin(p.age * 18 + p.seed); ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill(); }
+          else { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.scale(1, Math.cos(p.rot * 1.7)); ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); ctx.restore(); }
+        }
+      }
+      ctx.globalAlpha = 1;
+      FXS.parts = FXS.parts.filter(p => p.age < p.life);
+      if (FXS.parts.length || FXS.emitters.length) requestAnimationFrame(frame);
+      else { ctx.clearRect(0, 0, FXS.W, FXS.H); FXS.running = false; }
+    };
+    requestAnimationFrame(frame);
+  }
+  return FXS;
+}
+function confetti() {
+  if (REDUCED() || !fxStart()) return;
+  const r = $("stName").getBoundingClientRect(), ox = r.left + r.width / 2, oy = r.top + r.height / 2;
+  const colors = ["#e9c46a", "#f7dc8c", "#f5f1e6", "#c9a64a", "#9fb5ff"], scale = Math.min(1.4, Math.max(0.7, FXS.W / 900));
+  for (let i = 0; i < 170; i++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.5, sp = (260 + Math.random() * 620) * scale;
+    FXS.parts.push({ kind: "confetti", x: ox + (Math.random() - 0.5) * r.width * 0.6, y: oy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 900 * scale, drag: 0.985, w: 6 + Math.random() * 7, h: 3 + Math.random() * 4, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 14, c: colors[i % colors.length], star: i % 6 === 0, seed: Math.random() * 9, age: 0, life: 3.4 + Math.random() * 0.4 });
+  }
+}
+// tonight's candle bursts into flame: a shower of sparks from its wick for about a second and a half
+function candleSparks(night) {
+  if (REDUCED()) return;
+  const svgEl = $("menorah"); if (!svgEl || !fxStart()) return;
+  const r = svgEl.getBoundingClientRect(); if (!r.width) return;
+  const xs = [40, 92, 144, 196, 324, 376, 428, 480], cx = xs[8 - night], k = r.width / 520;
+  const ox = r.left + cx * k, oy = r.top + (82 - 14) * k, s = Math.max(0.6, k * 1.6);
+  const hot = ["#fff6c8", "#ffe08a", "#ffc24a", "#ff9a3c", "#ff7a1a"];
+  const spark = burst => () => {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * (burst ? 2.6 : 1.3), sp = (burst ? 260 + Math.random() * 520 : 120 + Math.random() * 260) * s;
+    return { kind: "spark", x: ox + (Math.random() - 0.5) * 4, y: oy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 420 * s, drag: 0.97, size: (1.2 + Math.random() * 1.8) * Math.min(1.6, s), c: hot[randomBelow(hot.length)], seed: Math.random() * 9, age: 0, life: 0.5 + Math.random() * (burst ? 1.1 : 0.8) };
+  };
+  const first = spark(true); for (let i = 0; i < 60; i++) FXS.parts.push(first());
+  FXS.emitters.push({ rate: 55, acc: 0, left: 1.6, make: spark(false) });
+}
+// the whoosh and crackle of the candle catching
+function sfxIgnite() {
+  const c = audio(); if (!c) return;
+  const t = c.currentTime, src = c.createBufferSource(), lp = c.createBiquadFilter(), g = c.createGain();
+  src.buffer = noiseBuf(c); lp.type = "lowpass"; lp.Q.value = 2;
+  lp.frequency.setValueAtTime(250, t); lp.frequency.exponentialRampToValueAtTime(4200, t + 0.35); lp.frequency.exponentialRampToValueAtTime(900, t + 0.9);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.32, t + 0.12); g.gain.exponentialRampToValueAtTime(0.0008, t + 1.0);
+  src.connect(lp).connect(g).connect(SFX.master); src.start(t, Math.random() * 0.5); src.stop(t + 1.05);
+  for (let i = 0; i < 9; i++) {
+    const tt = t + 0.12 + Math.random() * 1.1, s2 = c.createBufferSource(), hp = c.createBiquadFilter(), g2 = c.createGain();
+    s2.buffer = noiseBuf(c); hp.type = "highpass"; hp.frequency.value = 2500 + Math.random() * 3000;
+    g2.gain.setValueAtTime(0.06 + Math.random() * 0.08, tt); g2.gain.exponentialRampToValueAtTime(0.0008, tt + 0.03);
+    s2.connect(hp).connect(g2).connect(SFX.master); s2.start(tt, Math.random() * 0.8); s2.stop(tt + 0.04);
+  }
 }
 
 /* ===================================================================
@@ -1417,6 +1598,7 @@ async function voidAndRedraw(reason) {
 }
 async function runDraw() {
   const pool = S.pool; if (!pool || !pool.total || stage.rolling) return;
+  audio(); updateSoundBtn();
   $("stControls").replaceChildren();
   const ticket = randomBelow(pool.total) + 1;
   const { entry: winner, part } = ticketOwner(pool, ticket);
@@ -1465,7 +1647,13 @@ async function authed() {
   if (k) { try { await useSigner(unb64(k)); return true; } catch { session.del("key"); } }
   return false;
 }
-function mount(html) { const app = $("app"); app.innerHTML = html + STAGE_HTML; }
+function mount(html) {
+  const app = $("app"); app.innerHTML = html + STAGE_HTML;
+  $("soundBtn").addEventListener("click", toggleSound);
+  // on the organizer's draw screen the sound switch sits in the top bar, clear of the Draw and Done buttons
+  if (document.documentElement.dataset.view === "desk") document.querySelector(".stage-top .row").prepend($("soundBtn"));
+  setTimeout(updateSoundBtn);
+}
 function setView(v) { document.documentElement.dataset.view = v; }
 let shownKey = null;
 // The watch page follows the live state as it arrives: dashboard, draw screen, then back.
@@ -1603,6 +1791,7 @@ listeners.add(() => {
   else if (v === "desk") renderPubState();
 });
 setInterval(() => { if ($("modeChips")) renderChips(); }, 5000);
+document.addEventListener("pointerdown", unlockAudio, { capture: true });
 (async () => {
   startFeed();
   await boot();

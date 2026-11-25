@@ -808,7 +808,7 @@ function renderNights() {
       el("div", { class: "body" },
         el("div", { class: "n" }, el("span", { class: "eyebrow", text: `Night ${N.n}` }), flames),
         el("div", { class: "prize", text: `#${N.prize} ${PRIZES[N.prize].name}` }),
-        el("div", { class: "when", text: N.draw !== N.light ? `Lit ${N.light} · drawn ${N.draw}` : N.light.startsWith("Motzei") ? `Lit and drawn ${N.light}` : N.light }),
+        el("div", { class: "when", text: N.draw }),
         el("div", { class: "status" + (rec ? " won" : ""), text: rec ? `${rec.practice ? "Practice: " : "Won by "}${rec.name}` : (S.selected === N.n ? "Selected" : "Not drawn yet") }))));
   }
 }

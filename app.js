@@ -67,6 +67,9 @@ function el(tag, attrs, ...kids) {
 const fmt = n => Number(n).toLocaleString("en-US");
 // CauseMatch puts an apostrophe in front of numbers so Excel keeps them as text; drop it.
 const norm = s => String(s ?? "").replace(/\s+/g, " ").trim().replace(/^'(?=\S)/, "");
+// Names shown differently from how CauseMatch has them (matched ignoring case, spacing and any title already there).
+const NAME_FIXES = { "zev munk": "Dr. Zev Munk" };
+const fixName = s => { const k = norm(s).toLowerCase().replace(/^dr\.?\s+/, ""); return NAME_FIXES[k] || norm(s); };
 const store = {
   get(k, d) { try { const v = localStorage.getItem("tga-raffle:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("tga-raffle:" + k, JSON.stringify(v)); } catch {} },
@@ -691,14 +694,14 @@ function process() {
     if (S.campaign && map.campaign != null && norm(get("campaign")) !== S.campaign) { otherCampaign++; return; }
     total++;
     const status = norm(get("status"));
-    const name = norm(map.first != null || map.last != null ? `${norm(get("first"))} ${norm(get("last"))}` : get("name")) || norm(get("name"));
+    const name = fixName(norm(map.first != null || map.last != null ? `${norm(get("first"))} ${norm(get("last"))}` : get("name")) || norm(get("name")));
     const email = norm(get("email")).toLowerCase();
     if (status && EXCLUDE_STATUS.test(status)) { excluded++; excludedRows.push({ name, status }); return; }
     const date = parseDate(get("date"), dateHeader);
     if (date && (!latest || date > latest)) latest = date;
     if (!date) noDate++;
     const amount = toNumber(get("amount"));
-    const seller = norm(get("seller")) || norm(get("ambassador"));
+    const seller = fixName(norm(get("seller")) || norm(get("ambassador")));
     const rowId = norm(get("id")) || "row" + (i + 1);
     let parts = splitPackages(get("pkg"), get("qty"), map.qty != null);
     const blank = !parts.length;

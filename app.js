@@ -46,6 +46,10 @@ const PACKAGES = [
 ];
 const PKG = Object.fromEntries(PACKAGES.map(p => [p.id, p]));
 const REVEAL_MS = 15000;
+const LEAD_MS = 2000;   // "Get ready" before the first ticket, so every watcher sees the list from the start
+const SLOW_MS = 4000;   // the last few names slow down before the winner
+// every ticket gets its own flash: about 34 ms each (two frames on a phone), between 8 and 30 seconds in all
+const rollTime = tickets => Math.min(30000, Math.max(8000, tickets * 34)) + SLOW_MS;
 const HOLD_MS = 12000; // how long viewers see the winner on the draw screen before returning to the dashboard // time between pressing Draw and the name appearing, so watchers' screens catch up
 
 /* ---------- Small helpers ---------- */
@@ -135,7 +139,38 @@ const normPw = pw => String(pw || "").trim().toLowerCase();
 /* ---------- Live state: signed messages over ntfy.sh ---------- */
 const CFG = JSON.parse(document.getElementById("raffle-config").textContent);
 let STATE = { ver: 0, results: [], live: null };
-const NAMES = {};                 // drawing id -> names flashed on screen
+const NAMES = {};                 // drawing id -> names flashed on screen (older format)
+const TICKETS = {};               // drawing id -> { of, parts: { i: { first, names, counts } } }
+// every ticket in the drawing as { n: name, t: ticket number }; built from whichever parts have arrived
+function ticketList(id) {
+  const T = TICKETS[id];
+  if (!T) return NAMES[id] ? NAMES[id].map((n, i) => ({ n, t: i + 1 })) : null;
+  const out = [];
+  for (const part of Object.values(T.parts)) {
+    let t = part.first;
+    part.names.forEach((n, i) => { for (let k = 0; k < (part.counts[i] || 1); k++) out.push({ n, t: t++ }); });
+  }
+  return out.length ? out : null;
+}
+function ticketsFromPool(pool, display) {
+  const out = [];
+  for (const e of pool.entries) for (let t = e.from; t <= e.to; t++) out.push({ n: display(e), t });
+  return out;
+}
+// split names + ticket counts into pieces that each fit one message
+function chunkTickets(names, counts) {
+  const parts = []; let cur = { first: 1, names: [], counts: [] }, next = 1;
+  for (let i = 0; i < names.length; i++) {
+    cur.names.push(names[i]); cur.counts.push(counts[i]);
+    if (encUtf8(JSON.stringify(cur)).length > 3200 && cur.names.length > 1) {
+      cur.names.pop(); cur.counts.pop(); parts.push(cur);
+      cur = { first: next, names: [names[i]], counts: [counts[i]] };
+    }
+    next += counts[i];
+  }
+  parts.push(cur);
+  return parts;
+}
 const encUtf8 = s => new TextEncoder().encode(s);
 const b64 = buf => { let s = ""; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 32768) s += String.fromCharCode.apply(null, u.subarray(i, i + 32768)); return btoa(s); };
 const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -180,6 +215,11 @@ async function ingest(body) {
   const p = await readSigned(body);
   if (!p) return;
   if (p.kind === "names" && p.id && Array.isArray(p.names)) { NAMES[p.id] = p.names; return; }
+  if (p.kind === "tickets" && p.id && Array.isArray(p.names) && Array.isArray(p.counts)) {
+    const T = TICKETS[p.id] || (TICKETS[p.id] = { of: p.of, parts: {} });
+    T.parts[p.part] = { first: p.first, names: p.names, counts: p.counts };
+    return;
+  }
   if (p.kind === "state" && p.ver > (STATE.ver || 0)) {
     STATE = { ver: p.ver, results: p.results || [], live: p.live || null };
     store.set("lastState", body);
@@ -221,10 +261,17 @@ async function publishState(mutate) {
   const next = JSON.parse(JSON.stringify(STATE));
   mutate(next);
   const live = next.live ? { ...next.live } : null;
-  let names = null;
-  if (live && live.names) { names = fitNames(live.names); delete live.names; }
+  let entries = null;
+  if (live && live.entries) { entries = live.entries; delete live.entries; }
   try {
-    if (names) { NAMES[live.id] = names; await post({ kind: "names", id: live.id, names }); }
+    if (entries) {
+      const parts = chunkTickets(entries.names, entries.counts);
+      TICKETS[live.id] = { of: parts.length, parts: {} };
+      for (let i = 0; i < parts.length; i++) {
+        TICKETS[live.id].parts[i] = parts[i];
+        await post({ kind: "tickets", id: live.id, part: i, of: parts.length, ...parts[i] });
+      }
+    }
     await post({ kind: "state", ver: Math.max(Date.now(), (STATE.ver || 0) + 1), results: next.results || [], live });
     return { ok: true };
   } catch (e) { return { ok: false, code: (e && e.code) || "upstream_error" }; }
@@ -1105,23 +1152,37 @@ function closeStage() {
   try { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); } catch {}
   if (stage.operator) refresh();
 }
-// Flash ticket holders' names until the reveal time, then show the winner.
-function rollTo(rec, revealAt, names) {
+// Flash every ticket in the drawing once, in random order (a name shows as many times as it has tickets),
+// then slow down over the last few and land on the winner at the reveal time.
+function shuffledOrder(n) { const o = Array.from({ length: n }, (_, i) => i); for (let i = n - 1; i > 0; i--) { const j = randomBelow(i + 1); [o[i], o[j]] = [o[j], o[i]]; } return o; }
+function rollTo(rec, revealAt, tickets, rollMs) {
   return new Promise(resolve => {
     stage.rolling = true;
-    const nm = $("stName"); nm.className = "st-name rolling";
-    const total = Math.max(1, rec.poolTickets || 1), digits = String(total).length;
-    const getList = () => { const l = typeof names === "function" ? names() : names; return l && l.length ? l : null; };
-    let last = -1;
-    $("stCount").textContent = "Drawing…";
+    const nm = $("stName"), cnt = $("stCount");
+    nm.className = "st-name rolling";
+    const getList = () => { const l = typeof tickets === "function" ? tickets() : tickets; return l && l.length ? l : null; };
+    const total = Math.max(1, rec.poolTickets || 1);
+    const fastEnd = revealAt - SLOW_MS, fastStart = revealAt - (rollMs || REVEAL_MS);
+    let order = null, orderFor = 0, shown = -1, slowNext = 0;
+    const show = x => { nm.textContent = x.n; cnt.textContent = "Ticket #" + fmt(x.t); };
     const tick = () => {
-      const left = revealAt - Date.now();
-      if (left <= 0) { stage.rolling = false; return resolve(); }
+      const now = Date.now();
+      if (now >= revealAt) { stage.rolling = false; return resolve(); }
       const list = getList();
-      if (list) { let i = randomBelow(list.length); if (i === last && list.length > 1) i = (i + 1) % list.length; last = i; nm.textContent = list[i]; }
-      else nm.textContent = "#" + String(randomBelow(total) + 1).padStart(digits, "0");
-      const t = Math.max(0, Math.min(1, 1 - left / REVEAL_MS));
-      stage.timer = setTimeout(tick, 55 + 420 * t * t * t);
+      if (now < fastStart) {
+        nm.textContent = "Get ready"; cnt.textContent = `${fmt(total)} tickets in this drawing`;
+      } else if (now < fastEnd) {
+        if (list) {
+          if (!order || orderFor !== list.length) { order = shuffledOrder(list.length); orderFor = list.length; }
+          const i = Math.min(order.length - 1, Math.floor((now - fastStart) / ((fastEnd - fastStart) / order.length)));
+          if (i !== shown) { shown = i; show(list[order[i]]); }
+        } else { nm.textContent = "#" + fmt(randomBelow(total) + 1); cnt.textContent = "Drawing…"; }
+      } else if (now >= slowNext) {
+        if (list) show(list[randomBelow(list.length)]); else nm.textContent = "#" + fmt(randomBelow(total) + 1);
+        const p = (now - fastEnd) / SLOW_MS;
+        slowNext = now + 90 + 520 * p * p;
+      }
+      stage.timer = setTimeout(tick, now < fastEnd ? 8 : 20);
     };
     tick();
   });
@@ -1135,11 +1196,12 @@ function showWinner(rec) {
   $("stMeta").replaceChildren(rec.practice ? "Practice draw, not recorded · " : "", "List fingerprint ", el("span", { class: "fp", text: rec.fp }));
   drawMenorah(N.n, N.n);
 }
-async function playReveal(rec, revealAt, operator, names) {
-  stage.names = typeof names === "function" ? (names() || []) : (names || []);
+async function playReveal(rec, revealAt, operator, tickets, rollMs) {
+  const list = typeof tickets === "function" ? tickets() : tickets;
+  stage.names = list ? [...new Set(list.map(x => x.n))] : [];
   stageFrame(rec.night, { operator, subtitle: `${fmt(rec.poolTickets)} tickets · ${fmt(rec.poolEntrants)} people` });
   $("stMeta").replaceChildren("List fingerprint ", el("span", { class: "fp", text: rec.fp }));
-  if (Date.now() < revealAt) await rollTo(rec, revealAt, names);
+  if (Date.now() < revealAt) await rollTo(rec, revealAt, tickets, rollMs);
   showWinner(rec);
   if (operator) operatorControls("done");
 }
@@ -1365,22 +1427,25 @@ async function runDraw() {
     poolTickets: pool.total, poolEntrants: pool.entries.length, fp: pool.fp, drawnAt: new Date().toISOString(),
     status: "drawn", file: S.source === "sample" ? "sample data" : S.fileName };
   stage.rec = rec;
-  // names only, as shown on screen: never emails, phones or ticket counts
-  const names = [...new Set(pool.entries.map(e => (e.private || S.flags.short) ? shortName(e.name) : e.name))];
+  // names as shown on screen (never emails or phones), each with its number of tickets
+  const showName = e => (e.private || S.flags.short) ? shortName(e.name) : e.name;
+  const tickets = ticketsFromPool(pool, showName);
+  const entries = { names: pool.entries.map(showName), counts: pool.entries.map(e => e.count) };
+  const rollMs = rollTime(pool.total);
   if (practice) {
     rec.practice = true; S.practice.push(rec);
-    const revealAt = Date.now() + REVEAL_MS;
-    const show = playReveal(rec, revealAt, true, names);
+    const revealAt = Date.now() + LEAD_MS + rollMs;
+    const show = playReveal(rec, revealAt, true, tickets, rollMs);
     if (S.flags.showPractice && SIGNER) {
-      const r = await publishState(s => { s.live = { phase: "drawn", night: rec.night, id: rec.id, revealAt, at: Date.now(), names, practice: true, rec }; }, { expectStage: true });
+      const r = await publishState(s => { s.live = { phase: "drawn", night: rec.night, id: rec.id, revealAt, rollMs, at: Date.now(), entries, practice: true, rec }; }, { expectStage: true });
       if (!r.ok) toast("The live page couldn't be reached, so this rehearsal is on your screen only.");
     }
     await show; return;
   }
-  const revealAt = Date.now() + REVEAL_MS;
-  const show = playReveal(rec, revealAt, true, names);
+  const revealAt = Date.now() + LEAD_MS + rollMs;
+  const show = playReveal(rec, revealAt, true, tickets, rollMs);
   // save the result into the page; everyone watching reloads and flashes the same names until the same moment
-  const r = await publishState(s => { s.results.push(rec); s.live = { phase: "drawn", night: rec.night, id: rec.id, revealAt, at: Date.now(), names }; }, { expectStage: true, pending: rec });
+  const r = await publishState(s => { s.results.push(rec); s.live = { phase: "drawn", night: rec.night, id: rec.id, revealAt, rollMs, at: Date.now(), entries }; }, { expectStage: true, pending: rec });
   if (!r.ok) {
     rec.localOnly = true; S.localDraws.push(rec); store.set("localDraws", S.localDraws);
     toast("Couldn't reach the live view, so this result is saved in this browser only. " + publishError(r.code));
@@ -1414,7 +1479,7 @@ function applyWatch() {
     shownKey = key; holdBack = rec.id; renderWatch();
     const id = rec.id;
     (async () => {
-      const show = playReveal(rec, L.revealAt, false, () => NAMES[id]);
+      const show = playReveal(rec, L.revealAt, false, () => ticketList(id), L.rollMs || REVEAL_MS);
       if (L.practice) markRehearsal();
       await show;
       if (L.practice) markRehearsal();
